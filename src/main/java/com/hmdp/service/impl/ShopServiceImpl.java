@@ -11,6 +11,9 @@ import com.hmdp.utils.RedisConstants;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * <p>
@@ -45,8 +48,24 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
         if(shop == null){
             return Result.fail("店铺不存在");
         }
-        //如果数据库存在，则将数据写入缓存
-        stringRedisTemplate.opsForValue().set(RedisConstants.CACHE_SHOP_KEY+id,JSONObject.toJSONString(shop));
+        //如果数据库存在，则将数据写入缓存,并设置有效期
+        stringRedisTemplate.opsForValue().set(RedisConstants.CACHE_SHOP_KEY+id,JSONObject.toJSONString(shop),
+                RedisConstants.CACHE_SHOP_TTL, TimeUnit.MINUTES);
         return Result.ok(shop);
+    }
+
+    @Transactional
+    @Override
+    public Result updateShop(Shop shop) {
+        //检验商铺ID是否存在
+        if(shop.getId() == null){
+            return Result.fail("商铺ID不能为空");
+        }
+        //更新数据库
+        updateById(shop);
+        //删除缓存
+        stringRedisTemplate.delete(RedisConstants.CACHE_SHOP_KEY+shop.getId());
+        //返回
+        return Result.ok();
     }
 }
