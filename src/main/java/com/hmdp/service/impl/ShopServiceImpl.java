@@ -1,5 +1,6 @@
 package com.hmdp.service.impl;
 
+import cn.hutool.core.util.BooleanUtil;
 import cn.hutool.core.util.StrUtil;
 import com.alibaba.fastjson.JSONObject;
 import com.hmdp.dto.Result;
@@ -8,6 +9,7 @@ import com.hmdp.mapper.ShopMapper;
 import com.hmdp.service.IShopService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.hmdp.utils.RedisConstants;
+import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -35,29 +37,81 @@ public class ShopServiceImpl extends ServiceImpl<ShopMapper, Shop> implements IS
      */
     @Override
     public Result queryById(Long id) {
+        //互斥锁解决缓存击穿问题
+        Shop shop = queryByIdWithMutex(id);
+        if(shop == null){
+            return Result.fail("商铺不存在");
+        }
+        return Result.ok(shop);
+    }
+
+    private Shop queryByIdWithMutex(Long id){
+
+        Shop shop = new Shop();
+        try {
+            //缓存不存在，尝试获取分布式锁
+            String lockKey = RedisConstants.LOCK_SHOP_KEY+id;
+            do{
+                if(nullShopIdCheck(id,shop)){
+                    return shop;
+                };
+                Thread.sleep(50);
+            }while(!tryLock(lockKey));
+
+            //Double-Check
+            if(nullShopIdCheck(id,shop)){
+                return shop;
+            }
+            //如果缓存不存在，则查询数据库
+            shop = getById(id);
+
+            Thread.sleep(200); //模拟查询数据库耗时
+
+            //判断数据库是否存在
+            if(shop == null){
+                stringRedisTemplate.opsForValue().set(RedisConstants.CACHE_SHOP_KEY+id,"",
+                        RedisConstants.CACHE_NULL_TTL, TimeUnit.MINUTES);
+                return null;
+            }
+            //如果数据库存在，则将数据写入缓存,并设置有效期
+            stringRedisTemplate.opsForValue().set(RedisConstants.CACHE_SHOP_KEY+id,JSONObject.toJSONString(shop),
+                    RedisConstants.CACHE_SHOP_TTL, TimeUnit.MINUTES);
+
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }finally {
+            //释放锁
+            unlock(RedisConstants.LOCK_SHOP_KEY+id);
+        }
+        return shop;
+
+
+    }
+    private boolean nullShopIdCheck(Long id,Shop shop){
         //从redis中查询缓存
         String jsonString = stringRedisTemplate.opsForValue().get(RedisConstants.CACHE_SHOP_KEY+id);
         //判断缓存是否存在
         if(!StrUtil.isBlank(jsonString)){
-            Shop shop = JSONObject.parseObject(jsonString, Shop.class);
-            return Result.ok(shop);
+            Shop tmpShop = JSONObject.parseObject(jsonString, Shop.class);
+            BeanUtils.copyProperties(tmpShop,shop);
+            return true;
         }
         //判断命中jsonString为""
         if(jsonString!=null){
-            return Result.fail("商铺不存在");
+            return true;
         }
-        //如果缓存不存在，则查询数据库
-        Shop shop = getById(id);
-        //判断数据库是否存在
-        if(shop == null){
-            stringRedisTemplate.opsForValue().set(RedisConstants.CACHE_SHOP_KEY+id,"",
-                    RedisConstants.CACHE_NULL_TTL, TimeUnit.MINUTES);
-            return Result.fail("商铺不存在");
-        }
-        //如果数据库存在，则将数据写入缓存,并设置有效期
-        stringRedisTemplate.opsForValue().set(RedisConstants.CACHE_SHOP_KEY+id,JSONObject.toJSONString(shop),
-                RedisConstants.CACHE_SHOP_TTL, TimeUnit.MINUTES);
-        return Result.ok(shop);
+        return false;
+    }
+
+    private boolean tryLock(String key){
+        //利用redis setnx命令尝试获取锁
+        Boolean flag = stringRedisTemplate.opsForValue().setIfAbsent(key, "1", RedisConstants.LOCK_SHOP_TTL, TimeUnit.SECONDS);
+        return BooleanUtil.isTrue(flag);
+    }
+
+    private void unlock(String key){
+        //删除redis数据达到解锁目的
+        stringRedisTemplate.delete(key);
     }
 
     @Transactional
