@@ -12,7 +12,7 @@ import java.time.LocalDateTime;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class RedisShopData implements Serializable {
+public class RedisObjectData implements Serializable {
     private LocalDateTime expireTime;
     private Object data;
 }
