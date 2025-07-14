@@ -83,18 +83,15 @@ public class CacheClient {
     //开辟线程池
     private ExecutorService CACHE_REBUILD_EXCUTOR = Executors.newFixedThreadPool(10);
     //逻辑过期时间解决缓存穿透问题
-    public <R,ID> R queryByIdWithLogicExpire(R obj,String keyPrefix,String lockKeyPrefix, ID id, Class<R> type,Function<ID,R> dbFallback,Long time
+    public <R,ID> R queryByIdWithLogicExpire(String keyPrefix,String lockKeyPrefix, ID id, Class<R> type,Function<ID,R> dbFallback,Long time
             , TimeUnit timeUnit) {
         String key = keyPrefix + id;
-        R r = obj;
         RedisObjectData box = new RedisObjectData();
         //从redis中查询缓存
         if(nullShopIdCheckWithExpire(key,box)){
-            dealData(box,r,type);
-            return r;
+            return dealData(box,type);
         }
         //获取锁
-        dealData(box,r,type);
         String lockKey = lockKeyPrefix + id;
         boolean isLock = tryLock(lockKey);
         if(isLock){
@@ -105,16 +102,14 @@ public class CacheClient {
                     //判断缓存是否过期
                     //Double-Check
                     if(nullShopIdCheckWithExpire(key,box)){
-                        dealData(box,r,type);
                         return;
                     }
-
                     //获取店铺信息
                     R apply = dbFallback.apply(id);
                     //Thread.sleep(100);//模拟数据重建时间
                     //封装,并写入redis
                     this.setWithLogicExpire(key,apply,time,timeUnit);
-                } catch (RuntimeException e) {
+                } catch (Exception e) {
                     throw new RuntimeException(e);
                 }finally {
                     //释放锁
@@ -123,6 +118,7 @@ public class CacheClient {
             });
         }
         //返回过期商铺信息
+        R r = dealData(box,type);
         return r;
 
     }
@@ -152,34 +148,37 @@ public class CacheClient {
         return false;
     }
 
-    private<R> void dealData(RedisObjectData box,R r,Class<R> type){
+    private<R> R dealData(RedisObjectData box,Class<R> type){
         String jsonString = JSONObject.toJSONString(box.getData());
-        BeanUtils.copyProperties(JSONObject.parseObject(jsonString,type),r);
+        if(StrUtil.isBlank(jsonString)){
+            return null;
+        }
+        return JSONObject.parseObject(jsonString,type);
     }
 
 
     //互斥锁解决缓存击穿问题
-    public<R,ID> R queryByIdWithMutex(R obj,String keyPrefix,String lockKeyPrefix, ID id, Class<R> type,Function<ID,R> dbFallback,Long time
+    public<R,ID> R queryByIdWithMutex(String keyPrefix,String lockKeyPrefix, ID id, Class<R> type,Function<ID,R> dbFallback,Long time
             , TimeUnit timeUnit){
 
         String key = keyPrefix + id;
-        R r = obj;
         try {
             //缓存不存在，尝试获取分布式锁
             String lockKey = lockKeyPrefix + id;
+            RedisObjectData box = new RedisObjectData();
             do{
-                if(nullShopIdCheck(key,r)){
-                    return r;
+                if(nullShopIdCheck(key,box)){
+                    return dealData(box,type);
                 };
                 Thread.sleep(50);
             }while(!tryLock(lockKey));
 
             //Double-Check
-            if(nullShopIdCheck(key,r)){
-                return r;
+            if(nullShopIdCheck(key,box)){
+                return dealData(box,type);
             }
             //如果缓存不存在，则查询数据库
-            r = dbFallback.apply(id);
+            R r = dbFallback.apply(id);
 
             Thread.sleep(200); //模拟查询数据库耗时
 
@@ -191,6 +190,7 @@ public class CacheClient {
             }
             //如果数据库存在，则将数据写入缓存,并设置有效期
             set(key, r, time, timeUnit);
+            return r;
 
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
@@ -198,22 +198,23 @@ public class CacheClient {
             //释放锁
             unlock(RedisConstants.LOCK_SHOP_KEY+id);
         }
-        return r;
+
 
 
     }
 
-    private<R> boolean nullShopIdCheck(String key,R r){
+    private<R> boolean nullShopIdCheck(String key,RedisObjectData box){
         //从redis中查询缓存
         String jsonString = stringRedisTemplate.opsForValue().get(key);
         //判断缓存是否存在
         if(!StrUtil.isBlank(jsonString)){
-            Shop tmpShop = JSONObject.parseObject(jsonString, Shop.class);
-            BeanUtils.copyProperties(tmpShop,r);
+            Shop shop = JSONObject.parseObject(jsonString, Shop.class);
+            box.setData(shop);
             return true;
         }
         //判断命中jsonString为""
         if(jsonString!=null){
+            box.setData(null);
             return true;
         }
         return false;
