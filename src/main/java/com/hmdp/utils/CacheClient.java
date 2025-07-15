@@ -180,7 +180,7 @@ public class CacheClient {
             //如果缓存不存在，则查询数据库
             R r = dbFallback.apply(id);
 
-            Thread.sleep(200); //模拟查询数据库耗时
+            //Thread.sleep(200); //模拟查询数据库耗时
 
             //判断数据库是否存在
             if(r == null){
