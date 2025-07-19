@@ -222,7 +222,7 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
         }
         //获得代理对象（事务）
         try{
-            createVoucherOrder(voucherOrder);
+            proxy.createVoucherOrder(voucherOrder);
         }finally{
             //释放锁
             //simpleRedisLock.unlock();
